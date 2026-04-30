@@ -1,0 +1,122 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Fields: uid, email, displayName, role (admin|manager|operator), storeId
+//
+// Collection: customers
+// Fields: name, phone, hairType, allergies, loyalty, points, createdAt
+//
+// Collection: products
+// Fields: name, category, price, cost, stock, supplierId
+//
+// Collection: invoices
+// Fields: invoiceNumber, customerId, items, subtotal, tax, total, status, createdAt
+//
+// Collection: suppliers
+// Fields: name, contact, category
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'password');
+    }
+
+    function getUserData(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    function getRole() {
+      return getUserData(request.auth.uid).role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (getRole() == 'admin' || request.auth.token.email == "florindoninepence@gmail.com");
+    }
+
+    function isManager() {
+      return isSignedIn() && (getRole() in ['admin', 'manager']);
+    }
+
+    function isReception() {
+      return isSignedIn() && (getRole() in ['admin', 'manager', 'reception']);
+    }
+
+    function isBarber() {
+      return isSignedIn() && (getRole() in ['admin', 'manager', 'reception', 'barber']);
+    }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.role in ['admin', 'manager', 'reception', 'barber'] &&
+             data.uid is string && data.email is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isManager());
+      allow create: if isSignedIn() && (request.auth.uid == uid || isAdmin()) && isValidUser(incoming());
+      allow update: if isSignedIn() && (request.auth.uid == uid || isAdmin()) && isValidUser(incoming());
+    }
+
+    match /audit_logs/{logId} {
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow read: if isManager();
+    }
+
+    match /customers/{customerId} {
+      allow read: if isBarber();
+      allow create, update: if isReception();
+      allow delete: if isManager();
+    }
+
+    match /products/{productId} {
+      allow read: if isBarber();
+      allow create, update: if isManager();
+      allow delete: if isAdmin();
+    }
+
+    match /invoices/{invoiceId} {
+      allow read: if isReception();
+      allow create: if isReception();
+      allow update: if isManager();
+      allow delete: if isAdmin();
+    }
+
+    match /appointments/{appointmentId} {
+      allow read: if isBarber();
+      allow create: if isReception();
+      allow update: if isReception() || (isBarber() && existing().barberId == request.auth.uid);
+      allow delete: if isManager();
+    }
+
+    match /suppliers/{supplierId} {
+      allow read: if isManager();
+      allow create, update: if isManager();
+      allow delete: if isAdmin();
+    }
+  }
+}
