@@ -87,13 +87,12 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       if (u) {
-        setSessionStartTime(Date.now());
+        if (!sessionStartTime) setSessionStartTime(Date.now());
         const userRef = doc(db, 'users', u.uid);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
           setProfile(userSnap.data());
         } else {
-          // Check if it's one of our mapped accounts
           const isAdminEmail = u.email === 'florindoninepence@gmail.com' || u.email === 'admin@dunamis.local' || u.email === 'florindo@dunamis.local';
           const isGestorEmail = u.email === 'gestor@dunamis.local';
           
@@ -109,7 +108,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
           auditService.log('user_created', { email: u.email });
         }
       } else {
-        // Log session time if collaborator
+        // Log last session before wiping
         if (sessionStartTime && profile?.role === 'barber') {
           const duration = Date.now() - sessionStartTime;
           createService('work_sessions').add({
@@ -126,7 +125,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
     return unsubscribe;
-  }, [sessionStartTime, profile?.uid, profile?.role, profile?.displayName]);
+  }, []); // Run only once
 
   // Activity tracking for session timeout
   useEffect(() => {
