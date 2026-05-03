@@ -87,6 +87,11 @@ service cloud.firestore {
       allow read: if isManager();
     }
 
+    match /work_sessions/{sessionId} {
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isManager());
+    }
+
     match /customers/{customerId} {
       allow read: if isBarber();
       allow create, update: if isReception();

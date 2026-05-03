@@ -44,7 +44,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 
 import { Background } from './components/Background';
 import { 
@@ -69,26 +69,39 @@ const AuthContext = createContext<AuthContextType>({
 // --- SESSION TIMEOUT ---
 const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 
+const DEFAULT_ACCOUNTS: Record<string, { email: string, defaultPass: string, role: string }> = {
+  'ADMIN': { email: 'admin@dunamis.local', defaultPass: 'Admin123', role: 'admin' },
+  'GESTOR': { email: 'gestor@dunamis.local', defaultPass: 'Gest1234', role: 'manager' },
+  'COLABORADOR': { email: 'colaborador@dunamis.local', defaultPass: 'Colab123', role: 'barber' },
+  'FLORINDO': { email: 'florindo@dunamis.local', defaultPass: 'Florindo123', role: 'admin' }
+};
+
 export function FirebaseProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastActivity, setLastActivity] = useState(Date.now());
+  const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       if (u) {
+        setSessionStartTime(Date.now());
         const userRef = doc(db, 'users', u.uid);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
           setProfile(userSnap.data());
         } else {
+          // Check if it's one of our mapped accounts
+          const isAdminEmail = u.email === 'florindoninepence@gmail.com' || u.email === 'admin@dunamis.local' || u.email === 'florindo@dunamis.local';
+          const isGestorEmail = u.email === 'gestor@dunamis.local';
+          
           const defaultProfile = {
             uid: u.uid,
             email: u.email,
-            displayName: u.displayName || u.email?.split('@')[0],
-            role: u.email === 'florindoninepence@gmail.com' ? 'admin' : 'reception',
+            displayName: u.displayName || u.email?.split('@')[0].toUpperCase(),
+            role: isAdminEmail ? 'admin' : (isGestorEmail ? 'manager' : 'barber'),
             createdAt: new Date().toISOString()
           };
           await setDoc(userRef, defaultProfile);
@@ -96,12 +109,24 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
           auditService.log('user_created', { email: u.email });
         }
       } else {
+        // Log session time if collaborator
+        if (sessionStartTime && profile?.role === 'barber') {
+          const duration = Date.now() - sessionStartTime;
+          createService('work_sessions').add({
+            userId: profile.uid,
+            userName: profile.displayName,
+            durationMs: duration,
+            startTime: new Date(sessionStartTime).toISOString(),
+            endTime: new Date().toISOString()
+          }).catch(console.error);
+        }
         setProfile(null);
+        setSessionStartTime(null);
       }
       setLoading(false);
     });
     return unsubscribe;
-  }, []);
+  }, [sessionStartTime, profile?.uid, profile?.role, profile?.displayName]);
 
   // Activity tracking for session timeout
   useEffect(() => {
@@ -168,24 +193,46 @@ class ErrorBoundary extends Component<any, any> {
 
 // --- AUTH SCREEN ---
 function AuthScreen() {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [isRegistering, setIsRegistering] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
+    
+    // Convert short names to dummy emails for Firebase Auth
+    const upperId = identifier.trim().toUpperCase();
+    let targetEmail = identifier;
+    let targetPass = password;
+
+    if (DEFAULT_ACCOUNTS[upperId]) {
+      targetEmail = DEFAULT_ACCOUNTS[upperId].email;
+    }
+
     try {
       if (isRegistering) {
-        await createUserWithEmailAndPassword(auth, email, password);
+        await createUserWithEmailAndPassword(auth, targetEmail, targetPass);
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        await signInWithEmailAndPassword(auth, targetEmail, targetPass);
       }
     } catch (err: any) {
-      setError(err.code === 'auth/user-not-found' ? 'Utilizador não encontrado' : (err.code === 'auth/wrong-password' ? 'Palavra-passe incorreta' : err.message));
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('PROVIDER_DISABLED');
+      } else if (err.code === 'auth/user-not-found' && DEFAULT_ACCOUNTS[upperId]) {
+        // Auto-create default accounts on first use attempt if they don't exist
+        try {
+          await createUserWithEmailAndPassword(auth, DEFAULT_ACCOUNTS[upperId].email, DEFAULT_ACCOUNTS[upperId].defaultPass);
+        } catch (createErr: any) {
+          setError('Erro ao inicializar conta padrão: ' + createErr.message);
+        }
+      } else {
+        setError(err.code === 'auth/user-not-found' ? 'Utilizador não encontrado' : (err.code === 'auth/wrong-password' ? 'Palavra-passe incorreta' : err.message));
+      }
     } finally {
       setLoading(false);
     }
@@ -209,6 +256,17 @@ function AuthScreen() {
       >
         <Card className="glass-effect border-white/5 bg-white/5 backdrop-blur-3xl overflow-hidden">
           <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
+          <div className="absolute top-4 right-4 z-20">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="text-white/30 hover:text-white hover:bg-white/10 rounded-full"
+              onClick={() => setShowSettings(true)}
+            >
+              <Settings size={20} />
+            </Button>
+          </div>
+
           <CardHeader className="text-center pb-2">
             <motion.div 
               animate={{ rotate: [0, -10, 10, 0] }}
@@ -223,21 +281,21 @@ function AuthScreen() {
           <CardContent className="space-y-6 pt-4">
             <form onSubmit={handleAuth} className="space-y-4">
               <div className="space-y-1.5">
-                <Label className="text-white/70 text-xs font-bold uppercase tracking-wider ml-1">Email Corporativo</Label>
+                <Label className="text-white/70 text-xs font-bold uppercase tracking-wider ml-1">Utilizador / Email</Label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30"><Users size={16} /></span>
                   <Input 
-                    type="email" 
-                    value={email} 
-                    onChange={e => setEmail(e.target.value)} 
+                    type="text" 
+                    value={identifier} 
+                    onChange={e => setIdentifier(e.target.value)} 
                     className="bg-white/5 border-white/10 text-white pl-10 h-12 focus:border-primary/50 transition-all rounded-xl"
-                    placeholder="ex: gestor@dunamis.com"
+                    placeholder="ADMIN, GESTOR ou seu Email"
                     required
                   />
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-white/70 text-xs font-bold uppercase tracking-wider ml-1">Palavra-passe</Label>
+                <Label className="text-white/70 text-xs font-bold uppercase tracking-wider ml-1">Palavra-passe (PIN)</Label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30"><ShieldCheck size={16} /></span>
                   <Input 
@@ -250,45 +308,73 @@ function AuthScreen() {
                   />
                 </div>
               </div>
-              {error && (
+              {error && error !== 'PROVIDER_DISABLED' && (
                 <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="flex items-center gap-2 p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-500 text-xs font-bold">
                   <AlertTriangle size={14} />
                   {error}
+                </motion.div>
+              )}
+
+              {error === 'PROVIDER_DISABLED' && (
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-3 p-4 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                  <div className="flex items-center gap-2 text-orange-500 text-xs font-black uppercase">
+                    <AlertTriangle size={14} /> Sistema em Manutenção
+                  </div>
+                  <p className="text-[10px] text-white/50 leading-relaxed">
+                    O provedor de Email/Senha não está ativo no seu Firebase Console. 
+                    Por favor, ative-o em <span className="text-primary italic">Authentication &gt; Sign-in method</span>.
+                  </p>
+                  <Button 
+                    variant="outline" 
+                    className="w-full h-10 border-orange-500/30 text-orange-500 hover:bg-orange-500/10 rounded-lg text-[10px] font-black uppercase"
+                    onClick={() => setError('')}
+                  >
+                    Tentar Novamente
+                  </Button>
                 </motion.div>
               )}
               <Button type="submit" className="w-full h-12 font-black uppercase tracking-[0.2em] text-xs shadow-lg shadow-primary/20 rounded-xl" disabled={loading}>
                 {loading ? <RefreshCw className="animate-spin" size={18} /> : (isRegistering ? 'Criar Nova Conta' : 'Iniciar Sessão')}
               </Button>
             </form>
-
-            <div className="relative py-2">
-              <div className="absolute inset-0 flex items-center px-8"><span className="w-full border-t border-white/10" /></div>
-              <div className="relative flex justify-center text-[10px] font-black uppercase tracking-widest"><span className="bg-slate-950 px-4 text-white/30">Métodos Alternativos</span></div>
-            </div>
-
-            <Button variant="outline" className="w-full h-12 border-white/10 text-white hover:bg-white/10 hover:border-white/20 transition-all rounded-xl gap-3 font-bold" onClick={handleGoogleLogin}>
-              <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="Google" />
-              Gestor Google Login
-            </Button>
-
-            <div className="text-center space-y-1">
-              <p className="text-[10px] text-white/30 uppercase font-black tracking-widest flex items-center justify-center gap-2">
-                <ShieldCheck size={10} className="text-primary" /> 2FA Ativo via Google/Microsoft
-              </p>
-              <p className="text-[10px] text-white/30 uppercase font-black tracking-widest">
-                {isRegistering ? 'Já possui acesso?' : 'Não possui credenciais?'}
-              </p>
-              <button 
-                onClick={() => setIsRegistering(!isRegistering)}
-                className="text-primary text-xs font-black uppercase tracking-widest hover:scale-105 transition-transform"
-              >
-                {isRegistering ? 'Voltar ao Login' : 'Solicitar ao Administrador'}
-              </button>
-            </div>
           </CardContent>
         </Card>
         <p className="text-center mt-8 text-white/20 text-[10px] font-bold uppercase tracking-[0.3em]">Built for Excellence • 2024</p>
       </motion.div>
+
+      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+        <DialogContent className="bg-slate-900 border-white/10 text-white rounded-3xl p-6">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-black uppercase tracking-widest text-primary flex items-center gap-2">
+              <Settings size={20} /> Definições de Acesso
+            </DialogTitle>
+            <DialogDescription className="text-white/40 text-xs">
+              Recuperação de acesso e informações de sistema.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-6 pt-4">
+             <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+                <h3 className="text-xs font-black uppercase tracking-widest text-white/80">Credenciais para Primeiro Uso</h3>
+                <div className="space-y-1 text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                  <p>ADMIN: <span className="text-primary">Admin123</span></p>
+                  <p>GESTOR: <span className="text-primary">Gest1234</span></p>
+                  <p>COLABORADOR: <span className="text-primary">Colab123</span></p>
+                </div>
+                <p className="text-[9px] text-primary/60 italic">* Após o primeiro login, poderá alterar o nome e PIN no seu perfil interno.</p>
+             </div>
+
+             <div className="flex flex-col gap-2">
+               <Button variant="outline" className="border-white/10 text-white h-12 rounded-xl text-xs font-bold uppercase tracking-widest" onClick={() => {
+                 setIdentifier('');
+                 setPassword('');
+                 setError('Instruções de restauro enviadas ao gestor.');
+                 setShowSettings(false);
+               }}>Solicitar Restauro de PIN</Button>
+               <Button className="h-12 rounded-xl text-xs font-black uppercase tracking-widest" onClick={() => setShowSettings(false)}>Fechar Definições</Button>
+             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -369,6 +455,16 @@ function AppContent() {
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [stores, setStores] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [sessionDuration, setSessionDuration] = useState(0);
+
+  useEffect(() => {
+    if (profile?.role !== 'barber') return;
+    const interval = setInterval(() => {
+      // Approximate time since start
+      setSessionDuration(prev => prev + 1000);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [profile]);
 
   useEffect(() => {
     if (!user) return;
@@ -419,6 +515,14 @@ function AppContent() {
           </div>
 
           <div className="flex items-center gap-2 md:gap-4">
+            {profile?.role === 'barber' && (
+              <div className="hidden lg:flex items-center gap-2 bg-black/20 px-4 py-2 rounded-full border border-white/10 shadow-inner">
+                <Clock size={16} className="text-white/60 animate-pulse" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-white/80">
+                  Turno: {Math.floor(sessionDuration / 3600000)}h {Math.floor((sessionDuration % 3600000) / 60000)}m
+                </span>
+              </div>
+            )}
             <NotificationCenter products={products} appointments={appointments} />
             <div className="hidden sm:flex items-center gap-2 bg-white/20 p-1 rounded-full border border-white/10">
               <Select value={i18n.language} onValueChange={(val) => i18n.changeLanguage(val)}>
@@ -517,30 +621,6 @@ function AppContent() {
           <a href="https://wa.me/258827043290" target="_blank" rel="noopener noreferrer" className="text-secondary font-bold hover:underline">9TECH</a>
         </footer>
       </div>
-    </div>
-  );
-}
-
-function LoginScreen({ isDark, setIsDark }: any) {
-  const { t } = useTranslation();
-  return (
-    <div className={cn("min-h-screen flex items-center justify-center p-4", isDark ? "dark bg-[#0a0a0a]" : "bg-background")}>
-      <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
-        <Card className="max-w-md w-full text-center shadow-2xl rounded-[2.5rem] p-8 glass-effect">
-          <div className="w-20 h-20 bg-primary rounded-3xl mx-auto mb-6 flex items-center justify-center text-white shadow-lg shadow-primary/30">
-            <ShieldCheck size={40} />
-          </div>
-          <h1 className="text-3xl font-black text-slate-800 dark:text-white mb-2">DUNAMIS SOFT</h1>
-          <p className="text-slate-500 mb-8">Professional Management System</p>
-          <Button onClick={() => signInWithPopup(auth, googleProvider)} className="w-full py-6 rounded-2xl gap-3 text-lg" variant="outline">
-            <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-            {t('login_google')}
-          </Button>
-          <Button variant="ghost" onClick={() => setIsDark(!isDark)} className="mt-6 text-slate-400">
-            {isDark ? <Sun size={20} /> : <Moon size={20} />}
-          </Button>
-        </Card>
-      </motion.div>
     </div>
   );
 }

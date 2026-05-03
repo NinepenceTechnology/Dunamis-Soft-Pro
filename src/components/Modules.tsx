@@ -29,11 +29,14 @@ import { Customer, Product, ModuleKey, Supplier, Store, Staff } from '../types';
 import { 
   customerService, productService, invoiceService, supplierService, 
   hrService, storeService, appointmentService, treatmentService, 
-  expenseService, staffService 
+  expenseService, staffService, createService
 } from '../services/dataService';
 import { auditService } from '../services/auditService';
 import { aiService } from '../services/aiService';
 import { paymentService } from '../services/paymentService';
+import { auth, db } from '../firebase';
+import { updateProfile, updatePassword } from 'firebase/auth';
+import { doc, updateDoc } from 'firebase/firestore';
 
 // --- SHARED COMPONENTS ---
 
@@ -1457,27 +1460,99 @@ export function StoreModule({ stores }: { stores: Store[] }) {
 
 export function SettingsModule({ profile, auditLogs }: { profile: any, auditLogs: any[] }) {
   const { t, i18n } = useTranslation();
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [newDisplayName, setNewDisplayName] = useState(profile?.displayName || '');
+  const [newPin, setNewPin] = useState('');
+  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+
+  const handleUpdateProfile = async () => {
+    setIsUpdating(true);
+    setMessage(null);
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("Utilizador não autenticado");
+
+      // Update Firebase Auth Profile
+      await updateProfile(user, { displayName: newDisplayName });
+      
+      // Update Firestore User Document
+      await updateDoc(doc(db, 'users', user.uid), {
+        displayName: newDisplayName
+      });
+
+      if (newPin) {
+        if (newPin.length < 6) throw new Error("O PIN deve ter pelo menos 6 caracteres.");
+        await updatePassword(user, newPin);
+      }
+
+      auditService.log('profile_updated', { uid: user.uid, displayName: newDisplayName });
+      setMessage({ type: 'success', text: 'Perfil e PIN atualizados com sucesso!' });
+      setNewPin('');
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsUpdating(false);
+    }
+  };
   
   return (
-    <div className="space-y-8 max-w-2xl mx-auto">
+    <div className="space-y-8 max-w-2xl mx-auto pb-20">
       <div className="text-center space-y-2">
         <h2 className="text-3xl font-black uppercase tracking-widest text-black dark:text-white">Configurações</h2>
         <p className="text-slate-500">Gerencie sua conta e preferências do sistema</p>
       </div>
 
       <Card className="glass-effect p-8 rounded-[2.5rem] space-y-8 max-w-2xl mx-auto border-none shadow-sm">
-        <div className="flex items-center gap-6 pb-8 border-b">
-          <div className="w-20 h-20 rounded-3xl bg-primary text-white flex items-center justify-center text-3xl font-black shadow-lg shadow-primary/30">
-            {profile?.displayName?.[0] || 'U'}
+        <div className="space-y-6">
+          <div className="flex items-center gap-6 pb-6 border-b border-black/5 dark:border-white/5">
+            <div className="w-20 h-20 rounded-3xl bg-primary text-white flex items-center justify-center text-3xl font-black shadow-lg shadow-primary/30">
+              {profile?.displayName?.[0] || 'U'}
+            </div>
+            <div className="flex-1">
+              <div className="space-y-1">
+                <Label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Nome de Exibição</Label>
+                <Input 
+                  value={newDisplayName} 
+                  onChange={e => setNewDisplayName(e.target.value)} 
+                  className="h-12 rounded-xl bg-white/50 dark:bg-white/5 border-none font-bold"
+                />
+              </div>
+            </div>
           </div>
-          <div>
-            <h3 className="text-2xl font-black text-slate-800 dark:text-white uppercase tracking-tighter">{profile?.displayName}</h3>
-            <p className="text-slate-500">{profile?.email}</p>
-            <span className="inline-block mt-2 px-3 py-1 rounded-full bg-primary/10 text-primary text-[10px] font-black uppercase tracking-widest">{profile?.role}</span>
+
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Novo PIN / Palavra-passe</Label>
+              <Input 
+                type="password"
+                value={newPin} 
+                onChange={e => setNewPin(e.target.value)} 
+                placeholder="Deixe em branco para não alterar"
+                className="h-12 rounded-xl bg-white/50 dark:bg-white/5 border-none"
+              />
+            </div>
+
+            {message && (
+              <div className={cn(
+                "p-4 rounded-xl text-xs font-bold flex items-center gap-2",
+                message.type === 'success' ? "bg-emerald-500/10 text-emerald-600" : "bg-rose-500/10 text-rose-600"
+              )}>
+                {message.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                {message.text}
+              </div>
+            )}
+
+            <Button 
+              onClick={handleUpdateProfile} 
+              disabled={isUpdating}
+              className="w-full h-12 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-primary/20"
+            >
+              {isUpdating ? <RefreshCw className="animate-spin" size={18} /> : 'Guardar Alterações'}
+            </Button>
           </div>
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 pt-4 border-t border-black/5 dark:border-white/5">
           <div className="space-y-2">
             <Label className="font-black uppercase text-[10px] tracking-widest text-slate-400">Idioma do Sistema</Label>
             <Select value={i18n.language} onValueChange={(val) => i18n.changeLanguage(val)}>
@@ -1561,9 +1636,9 @@ export function SettingsModule({ profile, auditLogs }: { profile: any, auditLogs
           </div>
         </div>
 
-        <div className="pt-8 border-t text-center">
+        <div className="pt-8 border-t border-black/5 dark:border-white/5 text-center">
           <p className="text-[10px] text-slate-400 uppercase font-bold mb-2">Versão do Sistema</p>
-          <p className="font-mono text-xs">v2.4.0-PRO (Enterprise Edition)</p>
+          <p className="font-mono text-xs">v2.4.5-PRO (Enterprise Edition)</p>
         </div>
       </Card>
     </div>
