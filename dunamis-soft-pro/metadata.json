@@ -1,0 +1,5 @@
+{
+  "name": "Dunamis Soft Pro",
+  "description": "Sistema de gestão profissional full-stack com autenticação Firebase, controle de estoque, faturamento, BI Dashboard e gestão de clientes.",
+  "requestFramePermissions": []
+}
