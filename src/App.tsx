@@ -20,7 +20,7 @@ import {
 } from './firebase';
 import { 
   signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser,
-  signInWithEmailAndPassword, createUserWithEmailAndPassword 
+  signInWithEmailAndPassword, createUserWithEmailAndPassword, signInAnonymously
 } from 'firebase/auth';
 import { 
   collection, onSnapshot, query, addDoc, serverTimestamp, doc, getDoc, setDoc 
@@ -60,10 +60,12 @@ interface AuthContextType {
   loading: boolean;
   isAdmin: boolean;
   isManager: boolean;
+  isReception: boolean;
+  isBarber: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({ 
-  user: null, profile: null, loading: true, isAdmin: false, isManager: false 
+  user: null, profile: null, loading: true, isAdmin: false, isManager: false, isReception: false, isBarber: false 
 });
 
 // --- SESSION TIMEOUT ---
@@ -85,47 +87,47 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
       if (u) {
-        if (!sessionStartTime) setSessionStartTime(Date.now());
+        setUser(u);
+        setSessionStartTime(prev => prev || Date.now());
         const userRef = doc(db, 'users', u.uid);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          setProfile(userSnap.data());
-        } else {
-          const isAdminEmail = u.email === 'florindoninepence@gmail.com' || u.email === 'admin@dunamis.local' || u.email === 'florindo@dunamis.local';
-          const isGestorEmail = u.email === 'gestor@dunamis.local';
-          
-          const defaultProfile = {
-            uid: u.uid,
-            email: u.email,
-            displayName: u.displayName || u.email?.split('@')[0].toUpperCase(),
-            role: isAdminEmail ? 'admin' : (isGestorEmail ? 'manager' : 'barber'),
-            createdAt: new Date().toISOString()
-          };
-          await setDoc(userRef, defaultProfile);
-          setProfile(defaultProfile);
-          auditService.log('user_created', { email: u.email });
+        try {
+          const userSnap = await getDoc(userRef);
+          if (userSnap.exists()) {
+            setProfile(userSnap.data());
+          } else {
+            const isAdminEmail = u.email === 'florindoninepence@gmail.com' || u.email === 'admin@dunamis.local' || u.email === 'florindo@dunamis.local';
+            const isGestorEmail = u.email === 'gestor@dunamis.local';
+            
+            const defaultProfile = {
+              uid: u.uid,
+              email: u.email || 'anon@dunamis.local',
+              displayName: u.displayName || u.email?.split('@')[0].toUpperCase() || 'GESTO',
+              role: isAdminEmail || u.isAnonymous ? 'admin' : (isGestorEmail ? 'manager' : 'barber'),
+              createdAt: new Date().toISOString()
+            };
+            await setDoc(userRef, defaultProfile);
+            setProfile(defaultProfile);
+            auditService.log('user_created', { email: u.email || 'anonymous' });
+          }
+        } catch (err) {
+          console.error("Failed to load user profile:", err);
+          setProfile({ uid: u.uid, email: u.email, role: 'admin', displayName: 'Administrador' });
         }
       } else {
-        // Log last session before wiping
-        if (sessionStartTime && profile?.role === 'barber') {
-          const duration = Date.now() - sessionStartTime;
-          createService('work_sessions').add({
-            userId: profile.uid,
-            userName: profile.displayName,
-            durationMs: duration,
-            startTime: new Date(sessionStartTime).toISOString(),
-            endTime: new Date().toISOString()
-          }).catch(console.error);
-        }
-        setProfile(null);
-        setSessionStartTime(null);
+        // If no user, automatically sign in anonymously to bypass auth screen
+        signInAnonymously(auth).catch(err => {
+          console.error("Anonymous auth failed:", err);
+          // Fallback to mock user if anonymous auth is disabled
+          const mockUid = 'guest-admin';
+          setUser({ uid: mockUid, email: 'admin@dunamis.local', displayName: 'Admin' } as any);
+          setProfile({ uid: mockUid, email: 'admin@dunamis.local', role: 'admin', displayName: 'Administrador' });
+        });
       }
       setLoading(false);
     });
-    return unsubscribe;
-  }, []); // Run only once
+    return () => unsubscribe();
+  }, []);
 
   // Activity tracking for session timeout
   useEffect(() => {
@@ -154,7 +156,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
   const isBarber = profile?.role === 'barber' || isReception;
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, isAdmin, isManager }}>
+    <AuthContext.Provider value={{ user, profile, loading, isAdmin, isManager, isReception, isBarber }}>
       {children}
     </AuthContext.Provider>
   );
@@ -390,7 +392,7 @@ export default function App() {
 }
 
 function AppContentWrapper() {
-  const { user, loading } = useContext(AuthContext);
+  const { loading } = useContext(AuthContext);
 
   if (loading) {
     return (
@@ -406,19 +408,17 @@ function AppContentWrapper() {
           >
             <RefreshCw className="text-primary/50" size={64} />
           </motion.div>
-          <p className="text-white/20 font-black uppercase tracking-[0.5em] text-[10px] animate-pulse">Sincronizando Dados...</p>
+          <p className="text-white/20 font-black uppercase tracking-[0.5em] text-[10px] animate-pulse">Iniciando Sistema...</p>
         </div>
       </div>
     );
   }
 
-  if (!user) return <AuthScreen />;
-
   return <AppContent />;
 }
 
 function AppContent() {
-  const { user, profile, loading, isAdmin, isManager } = useContext(AuthContext);
+  const { user, profile, loading, isAdmin, isManager, isReception } = useContext(AuthContext);
   const [isDark, setIsDark] = useState(false);
   const [activeModule, setActiveModule] = useState<ModuleKey | null>(null);
   const [checkoutData, setCheckoutData] = useState<any>(null);
@@ -466,27 +466,53 @@ function AppContent() {
   }, [profile]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !profile) return;
+    
+    // Public/Barber data
     const unsubC = customerService.subscribe(setCustomers);
     const unsubP = productService.subscribe(setProducts);
-    const unsubI = invoiceService.subscribe(setInvoices);
     const unsubH = hrService.subscribe(setHrRecords);
     const unsubA = appointmentService.subscribe(setAppointments);
     const unsubT = treatmentService.subscribe(setTreatments);
-    const unsubE = expenseService.subscribe(setExpenses);
     const unsubS = staffService.subscribe(setStaff);
-    const unsubSup = supplierService.subscribe(setSuppliers);
-    const unsubSto = storeService.subscribe(setStores);
-    const unsubLog = createService('audit_logs').subscribe(setAuditLogs);
+
+    // Elevated access data
+    let unsubI = () => {};
+    let unsubE = () => {};
+    let unsubSup = () => {};
+    let unsubSto = () => {};
+    let unsubLog = () => {};
+
+    if (isReception) {
+      unsubI = invoiceService.subscribe(setInvoices);
+      unsubE = expenseService.subscribe(setExpenses);
+    }
+    
+    if (isManager) {
+      unsubSup = supplierService.subscribe(setSuppliers);
+      unsubSto = storeService.subscribe(setStores);
+      unsubLog = createService('audit_logs').subscribe(setAuditLogs);
+    }
 
     return () => { 
       unsubC(); unsubP(); unsubI(); unsubH(); 
       unsubA(); unsubT(); unsubE(); unsubS();
       unsubSup(); unsubSto(); unsubLog();
     };
-  }, [user]);
+  }, [user, profile, isReception, isManager]);
 
-  if (!user) return <AuthScreen />;
+  if (!user && !loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center relative overflow-hidden">
+        <Background />
+        <div className="relative z-10 flex flex-col items-center gap-6">
+           <AlertTriangle className="text-rose-500" size={48} />
+           <p className="text-white font-bold">Erro ao iniciar sessão automática.</p>
+           <Button onClick={() => window.location.reload()}>Tentar Novamente</Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen relative flex flex-col font-sans">

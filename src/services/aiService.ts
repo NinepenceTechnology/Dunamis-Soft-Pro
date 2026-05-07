@@ -1,16 +1,32 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+const getAI = () => {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === 'undefined') {
+       console.warn("GEMINI_API_KEY is missing. AI features will be disabled.");
+       return null;
+    }
+    aiInstance = new GoogleGenAI(apiKey);
+  }
+  return aiInstance;
+};
 
 export const predictSales = async (historicalData: any[]) => {
   try {
+    const ai = getAI();
+    if (!ai) return [];
+
     const prompt = `Based on the following historical sales data, predict the sales for the next 7 days. Return the result as a JSON array of objects with 'date' and 'predictedSales'.
     Data: ${JSON.stringify(historicalData)}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
+    const response = await ai.getGenerativeModel({
+      model: "gemini-1.5-flash",
+    }).generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.ARRAY,
@@ -26,7 +42,8 @@ export const predictSales = async (historicalData: any[]) => {
       }
     });
 
-    return JSON.parse(response.text);
+    const result = response.response.text();
+    return JSON.parse(result);
   } catch (error) {
     console.error("AI Prediction failed:", error);
     return [];
