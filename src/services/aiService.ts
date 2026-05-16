@@ -4,7 +4,8 @@ let aiInstance: GoogleGenAI | null = null;
 
 const getAI = () => {
   if (!aiInstance) {
-    const apiKey = process.env.GEMINI_API_KEY;
+    // Safe access to prevent ReferenceError: process is not defined in browsers
+    const apiKey = typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : undefined;
     if (!apiKey || apiKey === 'undefined') {
        console.warn("GEMINI_API_KEY is missing. AI features will be disabled.");
        return null;

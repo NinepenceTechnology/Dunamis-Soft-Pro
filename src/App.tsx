@@ -109,6 +109,8 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
         } catch (err) {
           console.error("Failed to load user profile:", err);
           setProfile({ uid: u.uid, email: u.email, role: 'admin', displayName: 'Administrador' });
+        } finally {
+          setLoading(false);
         }
       } else {
         // AUTOMATIC BYPASS FOR INITIAL USE
@@ -118,9 +120,9 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
           const mockUid = 'system-admin';
           setUser({ uid: mockUid, email: 'admin@dunamis.local', displayName: 'Administrador' } as any);
           setProfile({ uid: mockUid, email: 'admin@dunamis.local', role: 'admin', displayName: 'Administrador' });
+          setLoading(false);
         });
       }
-      setLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -502,10 +504,15 @@ function AppContent() {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center relative overflow-hidden">
         <Background />
-        <div className="relative z-10 flex flex-col items-center gap-6">
-           <AlertTriangle className="text-rose-500" size={48} />
-           <p className="text-white font-bold">Erro ao iniciar sessão automática.</p>
-           <Button onClick={() => window.location.reload()}>Tentar Novamente</Button>
+        <div className="relative z-10 flex flex-col items-center gap-6 max-w-sm text-center px-6">
+           <div className="w-20 h-20 bg-rose-500/20 rounded-3xl flex items-center justify-center border border-rose-500/30">
+              <AlertTriangle className="text-rose-500" size={40} />
+           </div>
+           <div className="space-y-2">
+             <h2 className="text-white text-xl font-black uppercase tracking-tighter">Erro de Inicialização</h2>
+             <p className="text-white/60 text-sm font-medium">Não foi possível iniciar a sessão automática. Verifique sua conexão ou configuração do Firebase.</p>
+           </div>
+           <Button onClick={() => window.location.reload()} className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-xs">Tentar Novamente</Button>
         </div>
       </div>
     );
