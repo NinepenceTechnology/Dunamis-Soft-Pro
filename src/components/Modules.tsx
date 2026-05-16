@@ -36,7 +36,7 @@ import { aiService } from '../services/aiService';
 import { paymentService } from '../services/paymentService';
 import { auth, db } from '../firebase';
 import { updateProfile, updatePassword } from 'firebase/auth';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 
 // --- SHARED COMPONENTS ---
 
@@ -237,6 +237,21 @@ export function InvoiceCreator({ onClose, initialData }: { onClose: () => void, 
     }
 
     await invoiceService.add(invoiceData);
+    
+    // SYNC STOCK FOR PRODUCTS
+    for (const item of items) {
+      if (item.type === 'product' && item.id) {
+        const productRef = doc(db, 'products', item.id);
+        const productSnap = await getDoc(productRef);
+        if (productSnap.exists()) {
+          const currentStock = productSnap.data().stock || 0;
+          await updateDoc(productRef, { 
+            stock: Math.max(0, currentStock - item.quantity),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+    }
     
     // Auto Thermal print simulation
     paymentService.printThermalReceipt(invoiceData);
@@ -521,7 +536,11 @@ export function FinanceModule({ invoices, customers, expenses }: any) {
   
   const today = new Date().toDateString();
   const todayInvoices = invoices.filter((i: any) => new Date(i.date).toDateString() === today);
+  const todayExpenses = expenses.filter((e: any) => new Date(e.date).toDateString() === today);
+  
   const todayRevenue = todayInvoices.reduce((acc: number, inv: any) => acc + (inv.status === 'paid' ? inv.total : 0), 0);
+  const todayOut = todayExpenses.reduce((acc: number, exp: any) => acc + exp.amount, 0);
+  const todayNet = todayRevenue - todayOut;
   
   const paymentTotals = useMemo(() => {
     const totals = { mpesa: 0, emola: 0, cash: 0, card: 0 };
@@ -542,9 +561,16 @@ export function FinanceModule({ invoices, customers, expenses }: any) {
     <div className="space-y-6">
       <div className="bg-primary text-white p-8 rounded-[3rem] shadow-xl flex flex-col md:flex-row justify-between items-center gap-6">
         <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80 mb-1">Caixa de Hoje</p>
-          <h2 className="text-5xl font-black">{todayRevenue.toLocaleString()} MT</h2>
-          <p className="text-xs mt-2 opacity-80 italic italic-serif">{todayInvoices.length} transações realizadas sob protocolo</p>
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-80 mb-1">Caixa (Saldo Real Hoje)</p>
+          <div className="flex items-baseline gap-3">
+             <h2 className="text-5xl font-black">{todayNet.toLocaleString()} MT</h2>
+             <span className={cn("text-xs font-bold px-2 py-0.5 rounded-full", todayNet >= 0 ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300")}>
+               {todayNet >= 0 ? '+' : ''}{todayNet.toLocaleString()}
+             </span>
+          </div>
+          <p className="text-xs mt-2 opacity-80 italic italic-serif">
+            {todayRevenue.toLocaleString()} Entrada / {todayOut.toLocaleString()} Saída
+          </p>
         </div>
         <div className="flex gap-4">
           <Button variant="outline" className="bg-white/10 border-white/20 hover:bg-white text-white hover:text-primary rounded-2xl h-14 px-8 font-black uppercase tracking-widest transition-all">Abrir Caixa</Button>
@@ -746,13 +772,21 @@ export function CalendarModule({ appointments, customers, treatments, staff, onC
   const { t } = useTranslation();
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [isAdding, setIsAdding] = useState(false);
+  const [viewMode, setViewMode] = useState<'day' | 'upcoming'>('day');
   const [newApp, setNewApp] = useState({ customerId: '', treatmentId: '', professionalId: '', time: '09:00', notes: '' });
   
-  const filteredAppointments = appointments.filter((a: any) => {
-    if (!selectedDate) return false;
-    const appDate = new Date(a.date);
-    return appDate.toDateString() === selectedDate.toDateString();
-  });
+  const filteredAppointments = useMemo(() => {
+    if (viewMode === 'upcoming') {
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      return appointments.filter((a: any) => new Date(a.date) >= now);
+    }
+    if (!selectedDate) return [];
+    return appointments.filter((a: any) => {
+      const appDate = new Date(a.date);
+      return appDate.toDateString() === selectedDate.toDateString();
+    });
+  }, [appointments, selectedDate, viewMode]);
 
   const handleUpdateStatus = async (id: string, status: string) => {
     await appointmentService.update(id, { status });
@@ -829,9 +863,19 @@ export function CalendarModule({ appointments, customers, treatments, staff, onC
       </Card>
       
       <div className="lg:col-span-2 space-y-4">
-        <h2 className="text-xl font-black uppercase tracking-widest text-black dark:text-white">
-          {selectedDate?.toLocaleDateString('pt-PT', { weekday: 'long', day: 'numeric', month: 'long' })}
-        </h2>
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="text-xl font-black uppercase tracking-widest text-black dark:text-white">
+            {viewMode === 'day' 
+              ? selectedDate?.toLocaleDateString('pt-PT', { weekday: 'long', day: 'numeric', month: 'long' })
+              : 'Próximos Agendamentos'}
+          </h2>
+          <Tabs value={viewMode} onValueChange={(v: any) => setViewMode(v)}>
+            <TabsList className="bg-white/50 dark:bg-white/5 rounded-xl h-10">
+              <TabsTrigger value="day" className="text-[10px] font-bold uppercase">Diário</TabsTrigger>
+              <TabsTrigger value="upcoming" className="text-[10px] font-bold uppercase">Breves</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
         {filteredAppointments.length === 0 ? (
           <div className="glass-effect p-12 rounded-[2rem] text-center text-slate-400 italic">Nenhum agendamento para este dia.</div>
         ) : (
@@ -1011,6 +1055,58 @@ export function ProductModule({ products, isManager, isAdmin }: { products: Prod
     }
   };
 
+  const handleManualConsumption = async (product: Product) => {
+     if (product.stock > 0) {
+        await productService.update(product.id!, { stock: product.stock - 1 });
+        await expenseService.add({
+           description: `Consumo Interno: ${product.name}`,
+           amount: 0, // Cost is already in inventory
+           category: 'Stock',
+           date: new Date().toISOString()
+        });
+        auditService.log('product_consumed', { product: product.name });
+     }
+  };
+
+  const handleAcquisition = async (product: Product, quantity: number) => {
+     const currentStock = product.stock || 0;
+     await productService.update(product.id!, { stock: currentStock + quantity });
+     
+     // Add as expense if it was a purchase
+     await expenseService.add({
+       description: `Compra de Stock: ${product.name} (x${quantity})`,
+       amount: 0, // In a real scenario, we'd ask for the cost
+       category: 'Stock',
+       date: new Date().toISOString()
+     });
+     
+     auditService.log('stock_acquired', { product: product.name, quantity });
+  };
+
+  const AcquisitionDialog = ({ product }: { product: Product }) => {
+    const [qty, setQty] = useState(1);
+    return (
+      <Dialog>
+        <DialogTrigger asChild>
+          <Button variant="ghost" size="sm" className="h-8 w-8 rounded-lg" title="Adicionar Stock">
+            <Plus size={14} className="text-emerald-500" />
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="max-w-xs rounded-2xl">
+          <DialogHeader><DialogTitle className="text-sm font-black uppercase">Entrada de Stock</DialogTitle></DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-xs font-bold text-slate-500">{product.name}</p>
+            <div className="space-y-2">
+              <Label className="text-[10px] uppercase font-black">Quantidade a Adicionar</Label>
+              <Input type="number" value={qty} onChange={e => setQty(Number(e.target.value))} className="rounded-xl" />
+            </div>
+            <Button className="w-full h-12 rounded-xl font-bold uppercase tracking-widest text-[10px]" onClick={() => handleAcquisition(product, qty)}>Confirmar Entrada</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -1062,23 +1158,32 @@ export function ProductModule({ products, isManager, isAdmin }: { products: Prod
                     <span className="text-xs font-bold text-slate-600">{p.stock} em stock</span>
                   </div>
                   {isManager && (
-                    <div className="flex gap-1">
+                    <div className="flex gap-1 items-center">
                       <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => productService.update(p.id, { stock: Math.max(0, p.stock - 1) })}>
                         <TrendingDown size={14} className="text-rose-500" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => productService.update(p.id, { stock: p.stock + 1 })}>
-                        <TrendingUp size={14} className="text-emerald-500" />
-                      </Button>
+                      <AcquisitionDialog product={p} />
                     </div>
                   )}
                 </div>
-                <Button 
-                  onClick={() => handleQuickSale(p)}
-                  disabled={p.stock <= 0}
-                  className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px] gap-2"
-                >
-                  <ShoppingCart size={14} /> Venda Rápida
-                </Button>
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={() => handleQuickSale(p)}
+                    disabled={p.stock <= 0}
+                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-widest text-[10px] gap-2"
+                  >
+                    <ShoppingCart size={14} /> Venda
+                  </Button>
+                  <Button 
+                    variant="outline"
+                    onClick={() => handleManualConsumption(p)}
+                    disabled={p.stock <= 0}
+                    className="h-12 rounded-xl px-4 border-rose-200 text-rose-500 hover:bg-rose-50"
+                    title="Consumo Interno"
+                  >
+                    <Briefcase size={14} />
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -1104,34 +1209,39 @@ export function TreatmentModule({ treatments, isManager }: { treatments: any[], 
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center print:hidden">
         <h2 className="text-2xl font-black uppercase tracking-widest text-black dark:text-white">Serviços & Tratamentos</h2>
-        {isManager && (
-          <Dialog open={isAdding} onOpenChange={setIsAdding}>
-            <DialogTrigger asChild>
-              <Button className="h-12 px-6 rounded-xl gap-2 font-bold shadow-lg"><Plus size={20} /> {t('new')}</Button>
-            </DialogTrigger>
-            <DialogContent className="rounded-[2.5rem] p-8">
-              <DialogHeader><DialogTitle className="text-xl font-black uppercase tracking-widest">Novo Serviço</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="space-y-2"><Label>Nome do Serviço</Label><Input value={newTreatment.name} onChange={e => setNewTreatment({...newTreatment, name: e.target.value})} placeholder="Ex: Corte Moderno" /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2"><Label>Preço (MT)</Label><Input type="number" value={newTreatment.price} onChange={e => setNewTreatment({...newTreatment, price: Number(e.target.value)})} /></div>
-                  <div className="space-y-2"><Label>Duração (min)</Label><Input type="number" value={newTreatment.duration} onChange={e => setNewTreatment({...newTreatment, duration: Number(e.target.value)})} /></div>
+        <div className="flex gap-2">
+          <Button variant="outline" className="h-12 rounded-xl gap-2 font-bold" onClick={() => window.print()}>
+            <Download size={20} /> Imprimir Lista
+          </Button>
+          {isManager && (
+            <Dialog open={isAdding} onOpenChange={setIsAdding}>
+              <DialogTrigger asChild>
+                <Button className="h-12 px-6 rounded-xl gap-2 font-bold shadow-lg"><Plus size={20} /> {t('new')}</Button>
+              </DialogTrigger>
+              <DialogContent className="rounded-[2.5rem] p-8">
+                <DialogHeader><DialogTitle className="text-xl font-black uppercase tracking-widest">Novo Serviço</DialogTitle></DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2"><Label>Nome do Serviço</Label><Input value={newTreatment.name} onChange={e => setNewTreatment({...newTreatment, name: e.target.value})} placeholder="Ex: Corte Moderno" /></div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2"><Label>Preço (MT)</Label><Input type="number" value={newTreatment.price} onChange={e => setNewTreatment({...newTreatment, price: Number(e.target.value)})} /></div>
+                    <div className="space-y-2"><Label>Duração (min)</Label><Input type="number" value={newTreatment.duration} onChange={e => setNewTreatment({...newTreatment, duration: Number(e.target.value)})} /></div>
+                  </div>
                 </div>
-              </div>
-              <DialogFooter><Button onClick={handleAdd} className="w-full h-12 rounded-xl font-black uppercase tracking-widest">Gravar Serviço</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
-        )}
+                <DialogFooter><Button onClick={handleAdd} className="w-full h-12 rounded-xl font-black uppercase tracking-widest">Gravar Serviço</Button></DialogFooter>
+              </DialogContent>
+            </Dialog>
+          )}
+        </div>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 print:grid-cols-2">
         {treatments.map(tr => (
-          <Card key={tr.id} className="glass-effect rounded-[2.5rem] p-8 hover:y-[-4px] transition-all cursor-pointer group border-none shadow-sm">
-            <div className="w-12 h-12 rounded-2xl bg-rose-100 flex items-center justify-center text-rose-600 mb-6 group-hover:scale-110 transition-transform"><Scissors size={24} /></div>
+          <Card key={tr.id} className="glass-effect rounded-[2.5rem] p-8 hover:y-[-4px] transition-all cursor-pointer group border-none shadow-sm print:shadow-none print:border print:border-slate-100">
+            <div className="w-12 h-12 rounded-2xl bg-rose-100 flex items-center justify-center text-rose-600 mb-6 group-hover:scale-110 transition-transform print:hidden"><Scissors size={24} /></div>
             <h3 className="text-xl font-black uppercase tracking-tighter text-slate-800 dark:text-white mb-2">{tr.name}</h3>
             <p className="text-xs text-slate-500 mb-6 flex items-center gap-2"><Clock size={12} /> {tr.duration} min</p>
-            <div className="text-2xl font-black text-primary">{tr.price} MT</div>
+            <div className="text-2xl font-black text-primary">{tr.price.toLocaleString()} MT</div>
           </Card>
         ))}
       </div>

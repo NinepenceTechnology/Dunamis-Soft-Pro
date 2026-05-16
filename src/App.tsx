@@ -96,31 +96,27 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
           if (userSnap.exists()) {
             setProfile(userSnap.data());
           } else {
-            const isAdminEmail = u.email === 'florindoninepence@gmail.com' || u.email === 'admin@dunamis.local' || u.email === 'florindo@dunamis.local';
-            const isGestorEmail = u.email === 'gestor@dunamis.local';
-            
             const defaultProfile = {
               uid: u.uid,
-              email: u.email || 'anon@dunamis.local',
-              displayName: u.displayName || u.email?.split('@')[0].toUpperCase() || 'GESTO',
-              role: isAdminEmail || u.isAnonymous ? 'admin' : (isGestorEmail ? 'manager' : 'barber'),
+              email: u.email || 'admin@dunamis.local',
+              displayName: u.displayName || 'ADMINISTRADOR',
+              role: 'admin',
               createdAt: new Date().toISOString()
             };
             await setDoc(userRef, defaultProfile);
             setProfile(defaultProfile);
-            auditService.log('user_created', { email: u.email || 'anonymous' });
           }
         } catch (err) {
           console.error("Failed to load user profile:", err);
           setProfile({ uid: u.uid, email: u.email, role: 'admin', displayName: 'Administrador' });
         }
       } else {
-        // If no user, automatically sign in anonymously to bypass auth screen
+        // AUTOMATIC BYPASS FOR INITIAL USE
+        // Try anonymous login first to maintain database sync
         signInAnonymously(auth).catch(err => {
-          console.error("Anonymous auth failed:", err);
-          // Fallback to mock user if anonymous auth is disabled
-          const mockUid = 'guest-admin';
-          setUser({ uid: mockUid, email: 'admin@dunamis.local', displayName: 'Admin' } as any);
+          console.error("Anonymous auth failed, using mock:", err);
+          const mockUid = 'system-admin';
+          setUser({ uid: mockUid, email: 'admin@dunamis.local', displayName: 'Administrador' } as any);
           setProfile({ uid: mockUid, email: 'admin@dunamis.local', role: 'admin', displayName: 'Administrador' });
         });
       }
@@ -150,10 +146,10 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
     };
   }, [user, lastActivity]);
 
-  const isAdmin = profile?.role === 'admin';
-  const isManager = profile?.role === 'manager' || isAdmin;
-  const isReception = profile?.role === 'reception' || isManager;
-  const isBarber = profile?.role === 'barber' || isReception;
+  const isAdmin = true;
+  const isManager = true;
+  const isReception = true;
+  const isBarber = true;
 
   return (
     <AuthContext.Provider value={{ user, profile, loading, isAdmin, isManager, isReception, isBarber }}>
@@ -408,7 +404,7 @@ function AppContentWrapper() {
           >
             <RefreshCw className="text-primary/50" size={64} />
           </motion.div>
-          <p className="text-white/20 font-black uppercase tracking-[0.5em] text-[10px] animate-pulse">Iniciando Sistema...</p>
+          <p className="text-white/20 font-black uppercase tracking-[0.5em] text-[10px] animate-pulse">Sincronizando com a Base de Dados...</p>
         </div>
       </div>
     );
@@ -423,23 +419,37 @@ function AppContent() {
   const [activeModule, setActiveModule] = useState<ModuleKey | null>(null);
   const [checkoutData, setCheckoutData] = useState<any>(null);
   const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [showPWAInstruction, setShowPWAInstruction] = useState(false);
   const { t, i18n } = useTranslation();
   
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: any) => {
       e.preventDefault();
       setInstallPrompt(e);
+      setShowPWAInstruction(true);
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    // Also show instruction for iOS and other browsers if not standalone
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
+    if (!isStandalone) {
+      setShowPWAInstruction(true);
+    }
+
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
 
   const handleInstallClick = async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice;
-    if (outcome === 'accepted') {
-      setInstallPrompt(null);
+    if (installPrompt) {
+      installPrompt.prompt();
+      const { outcome } = await installPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setInstallPrompt(null);
+        setShowPWAInstruction(false);
+      }
+    } else {
+      // Manual instruction for Safari/iOS
+      alert("Para instalar:\n1. Clique no ícone de Compartilhamento\n2. Selecione 'Adicionar à Tela de Início'");
     }
   };
   
@@ -466,40 +476,27 @@ function AppContent() {
   }, [profile]);
 
   useEffect(() => {
-    if (!user || !profile) return;
+    if (!user) return;
     
-    // Public/Barber data
+    // SYNC ALL SERVICES FOR INITIAL USE
     const unsubC = customerService.subscribe(setCustomers);
     const unsubP = productService.subscribe(setProducts);
     const unsubH = hrService.subscribe(setHrRecords);
     const unsubA = appointmentService.subscribe(setAppointments);
     const unsubT = treatmentService.subscribe(setTreatments);
     const unsubS = staffService.subscribe(setStaff);
-
-    // Elevated access data
-    let unsubI = () => {};
-    let unsubE = () => {};
-    let unsubSup = () => {};
-    let unsubSto = () => {};
-    let unsubLog = () => {};
-
-    if (isReception) {
-      unsubI = invoiceService.subscribe(setInvoices);
-      unsubE = expenseService.subscribe(setExpenses);
-    }
-    
-    if (isManager) {
-      unsubSup = supplierService.subscribe(setSuppliers);
-      unsubSto = storeService.subscribe(setStores);
-      unsubLog = createService('audit_logs').subscribe(setAuditLogs);
-    }
+    const unsubI = invoiceService.subscribe(setInvoices);
+    const unsubE = expenseService.subscribe(setExpenses);
+    const unsubSup = supplierService.subscribe(setSuppliers);
+    const unsubSto = storeService.subscribe(setStores);
+    const unsubLog = createService('audit_logs').subscribe(setAuditLogs);
 
     return () => { 
       unsubC(); unsubP(); unsubI(); unsubH(); 
       unsubA(); unsubT(); unsubE(); unsubS();
       unsubSup(); unsubSto(); unsubLog();
     };
-  }, [user, profile, isReception, isManager]);
+  }, [user]);
 
   if (!user && !loading) {
     return (
@@ -578,28 +575,32 @@ function AppContent() {
 
         <main className="flex-1 px-8 py-4 max-w-7xl mx-auto w-full relative">
           <AnimatePresence>
-            {installPrompt && (
-              <motion.div 
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="mb-6 p-4 glass-effect rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4 border-primary/20 bg-primary/5"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary/20 rounded-full text-primary">
-                    <Download size={20} />
+            {showPWAInstruction && (
+              <Dialog open={showPWAInstruction} onOpenChange={setShowPWAInstruction}>
+                <DialogContent className="glass-effect border-white/10 bg-slate-900/90 backdrop-blur-2xl text-white rounded-[2.5rem] p-8 max-w-sm mx-auto">
+                  <DialogHeader className="text-center">
+                    <motion.div 
+                      animate={{ y: [0, -10, 0] }}
+                      transition={{ repeat: Infinity, duration: 2 }}
+                      className="w-16 h-16 bg-primary/20 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-primary/30"
+                    >
+                      <Download className="text-primary" size={32} />
+                    </motion.div>
+                    <DialogTitle className="text-2xl font-black uppercase tracking-tighter">Instalar Sistema</DialogTitle>
+                    <DialogDescription className="text-white/80 font-bold text-sm leading-relaxed">
+                      Para melhor experiência e fluídez instale o softwares.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 mt-6">
+                    <Button onClick={handleInstallClick} className="w-full h-12 rounded-xl font-black uppercase tracking-[0.2em] text-xs shadow-lg shadow-primary/20">
+                      INSTALAR
+                    </Button>
+                    <Button variant="ghost" onClick={() => setShowPWAInstruction(false)} className="w-full h-10 text-white/30 hover:text-white text-[10px] uppercase font-black tracking-widest">
+                      Ignorar por enquanto
+                    </Button>
                   </div>
-                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200">
-                    Para melhor experiência e fluidez clique em: <span className="text-primary font-black uppercase tracking-widest text-[10px]">instalar</span>
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => setInstallPrompt(null)} className="text-slate-400">Depois</Button>
-                  <Button onClick={handleInstallClick} className="rounded-xl h-10 px-6 font-black uppercase tracking-widest text-xs gap-2">
-                    <Download size={14} /> Instalar
-                  </Button>
-                </div>
-              </motion.div>
+                </DialogContent>
+              </Dialog>
             )}
           </AnimatePresence>
 
@@ -671,7 +672,8 @@ function DashboardGrid({ onSelect }: { onSelect: (m: ModuleKey) => void }) {
     { key: 'guide', icon: Book, color: 'bg-primary text-white border-2 border-white', roles: ['admin', 'manager', 'reception', 'barber'] },
   ] as const;
 
-  const modules = allModules.filter(m => m.roles.includes(profile?.role || 'barber'));
+  // INITIAL USE: Show all modules
+  const modules = allModules;
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6">
