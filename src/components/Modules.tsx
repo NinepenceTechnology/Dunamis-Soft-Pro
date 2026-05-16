@@ -1154,8 +1154,10 @@ export function ProductModule({ products, isManager, isAdmin }: { products: Prod
               <div className="flex flex-col gap-4 pt-4 border-t">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <div className={cn("w-2 h-2 rounded-full", p.stock < 5 ? "bg-rose-500" : "bg-emerald-500")} />
-                    <span className="text-xs font-bold text-slate-600">{p.stock} em stock</span>
+                    <div className={cn("w-2 h-2 rounded-full", p.stock < 5 ? "bg-rose-500 animate-pulse" : "bg-emerald-500")} />
+                    <span className={cn("text-xs font-bold", p.stock < 5 ? "text-rose-500" : "text-slate-600")}>
+                      {p.stock} em stock {p.stock < 5 && "(CRÍTICO)"}
+                    </span>
                   </div>
                   {isManager && (
                     <div className="flex gap-1 items-center">
@@ -1235,13 +1237,13 @@ export function TreatmentModule({ treatments, isManager }: { treatments: any[], 
           )}
         </div>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 print:grid-cols-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 print:grid-cols-2 print:gap-4">
         {treatments.map(tr => (
-          <Card key={tr.id} className="glass-effect rounded-[2.5rem] p-8 hover:y-[-4px] transition-all cursor-pointer group border-none shadow-sm print:shadow-none print:border print:border-slate-100">
+          <Card key={tr.id} className="glass-effect rounded-[2.5rem] p-8 hover:y-[-4px] transition-all cursor-pointer group border-none shadow-sm print:shadow-none print:border print:border-slate-200 print:rounded-xl print:p-4">
             <div className="w-12 h-12 rounded-2xl bg-rose-100 flex items-center justify-center text-rose-600 mb-6 group-hover:scale-110 transition-transform print:hidden"><Scissors size={24} /></div>
-            <h3 className="text-xl font-black uppercase tracking-tighter text-slate-800 dark:text-white mb-2">{tr.name}</h3>
-            <p className="text-xs text-slate-500 mb-6 flex items-center gap-2"><Clock size={12} /> {tr.duration} min</p>
-            <div className="text-2xl font-black text-primary">{tr.price.toLocaleString()} MT</div>
+            <h3 className="text-xl font-black uppercase tracking-tighter text-slate-800 dark:text-white mb-2 print:text-sm">{tr.name}</h3>
+            <p className="text-xs text-slate-500 mb-6 flex items-center gap-2 print:mb-2"><Clock size={12} /> {tr.duration} min</p>
+            <div className="text-2xl font-black text-primary print:text-lg">{tr.price.toLocaleString()} MT</div>
           </Card>
         ))}
       </div>
